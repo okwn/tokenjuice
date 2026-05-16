@@ -8,6 +8,7 @@ import { NO_COMPACTION_METADATA, mergeCompactionMetadata, type CompactionMetadat
 import { buildGithubActionsFailureSummary } from "./github-actions-summary.js";
 import { rewriteGhLines, rewriteGitDiffLines, rewriteGitStatusLines, rewriteSearchLines } from "./reduce-formatters.js";
 import { buildInspectionSummary } from "./reduce-inspection-summary.js";
+import { compactWholeJsonText } from "./reduce-utils.js";
 
 import type { CompactResult, CompiledRule, ReduceOptions, ToolExecutionInput } from "../types.js";
 
@@ -303,6 +304,12 @@ export async function reduceExecutionWithRules(
   const normalizedInput = normalizeExecutionInput(input);
   const rawText = buildRawText(normalizedInput);
   const measuredRawChars = countTextChars(stripAnsi(rawText));
+  const maxInlineChars = opts.maxInlineChars ?? 1200;
+  const buildStats = (reducedChars: number): CompactResult["stats"] => ({
+    rawChars: measuredRawChars,
+    reducedChars,
+    ratio: measuredRawChars === 0 ? 1 : reducedChars / measuredRawChars,
+  });
   const resolvedMatch = opts.classifier
     ? undefined
     : resolveRuleMatch(input, rules);
@@ -373,7 +380,7 @@ export async function reduceExecutionWithRules(
   const inspectionSummary = buildInspectionSummary(normalizedInput, rawText);
   if (inspectionSummary) {
     const summaryText = inspectionSummary.lines.join("\n").trim();
-    const selectedText = clampTextMiddleWithMetadata(summaryText, opts.maxInlineChars ?? 1200);
+    const selectedText = clampTextMiddleWithMetadata(summaryText, maxInlineChars);
     const reducedChars = countTextChars(selectedText.text);
     const summaryClassification = {
       family: "structured-summary",
@@ -461,7 +468,6 @@ export async function reduceExecutionWithRules(
     ? buildGithubActionsFailureSummary(reducerInput, rawText)
     : null;
   if (githubActionsFailureSummary) {
-    const maxInlineChars = opts.maxInlineChars ?? 1200;
     const inlineText = clampTextMiddleWithMetadata(githubActionsFailureSummary.text, maxInlineChars);
     const reducedChars = countTextChars(inlineText.text);
     const stats = {
@@ -504,9 +510,58 @@ export async function reduceExecutionWithRules(
     };
   }
 
+  if (classification.matchedReducer === "generic/fallback") {
+    const exitPrefix = reducerInput.exitCode && reducerInput.exitCode !== 0 ? `exit ${reducerInput.exitCode}\n` : "";
+    const jsonBudget = Math.max(0, maxInlineChars - countTextChars(exitPrefix));
+    const jsonOutput = compactWholeJsonText(rawText, jsonBudget);
+    if (jsonOutput) {
+      const inlineText = `${exitPrefix}${jsonOutput.text}`;
+      const reducedChars = countTextChars(inlineText);
+      const jsonClassification = {
+        family: "structured-json",
+        confidence: 0.9,
+        matchedReducer: "generic/json",
+        ...(classification.matchedVia ? { matchedVia: classification.matchedVia } : {}),
+        ...(classification.matchedCommand ? { matchedCommand: classification.matchedCommand } : {}),
+      };
+      const stats = buildStats(reducedChars);
+      const rawRef = opts.store
+        ? await storeArtifact(
+            {
+              input: normalizedInput,
+              rawText,
+              classification: jsonClassification,
+              stats,
+            },
+            opts.storeDir,
+          )
+        : undefined;
+
+      if (!opts.store && opts.recordStats) {
+        await storeArtifactMetadata(
+          {
+            input: normalizedInput,
+            rawText,
+            classification: jsonClassification,
+            stats,
+          },
+          opts.storeDir,
+        );
+      }
+
+      return {
+        inlineText,
+        ...(jsonOutput.compaction ? { compaction: jsonOutput.compaction } : {}),
+        ...(trace ? { trace: { ...trace, matchedReducer: jsonClassification.matchedReducer, family: jsonClassification.family } } : {}),
+        ...(rawRef ? { rawRef } : {}),
+        stats,
+        classification: jsonClassification,
+      };
+    }
+  }
+
   const { summary, facts, compaction } = applyRule(matchedRule, reducerInput, rawText);
   const compactText = formatInline(classification, reducerInput, summary || "(no output)", facts);
-  const maxInlineChars = opts.maxInlineChars ?? 1200;
   const selectedText = selectInlineText(classification, reducerInput, rawText, compactText, maxInlineChars, compaction);
   const clamp = classification.family === "help" || selectedText.text.includes("\n") ? clampTextMiddleWithMetadata : clampTextWithMetadata;
   const provisionalInlineText = clamp(selectedText.text, maxInlineChars);

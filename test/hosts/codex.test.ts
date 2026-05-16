@@ -143,6 +143,7 @@ describe("installCodexHook", () => {
     expect(parsed.hooks.PostToolUse[1]?.matcher).toBe("^Bash$");
     expect(parsed.hooks.PostToolUse[1]?.hooks[0]?.command).toContain("codex-post-tool-use");
     expect(parsed.hooks.PostToolUse[1]?.hooks[0]?.statusMessage).toBe("compacting bash output with tokenjuice");
+    expect(parsed.hooks.PostToolUse[1]?.hooks[0]?.timeout).toBe(10);
   });
 
   it("prefers a stable tokenjuice launcher from PATH when installing the hook", async () => {
@@ -455,7 +456,7 @@ describe("doctorCodexHook", () => {
           PostToolUse: [
             {
               matcher: "^Bash$",
-              hooks: [{ type: "command", command: `${launcherPath} codex-post-tool-use`, statusMessage: "compacting bash output with tokenjuice" }],
+              hooks: [{ type: "command", command: `${launcherPath} codex-post-tool-use`, statusMessage: "compacting bash output with tokenjuice", timeout: 10 }],
             },
           ],
         },
@@ -474,6 +475,40 @@ describe("doctorCodexHook", () => {
     );
     expect(report.issues).toContain(
       'non-tokenjuice Codex hook Stop[0].hooks[0] uses a low 2s timeout for "$HOME/bin/agent-attn-set waiting codex" — consider 6s or higher',
+    );
+  });
+
+  it("warns when the tokenjuice Codex hook is missing the timeout safety cap", async () => {
+    const home = await createTempDir();
+    const hooksPath = join(home, "hooks.json");
+    const binDir = join(home, "bin");
+    const launcherPath = join(binDir, "tokenjuice");
+    const featureFlagConfigPath = join(home, "config.toml");
+
+    process.env.PATH = binDir;
+    await mkdir(binDir, { recursive: true });
+    await writeFile(launcherPath, "#!/usr/bin/env bash\nexit 0\n", { encoding: "utf8", mode: 0o755 });
+    await writeFile(featureFlagConfigPath, "[features]\nhooks = true\n", "utf8");
+    await writeFile(
+      hooksPath,
+      `${JSON.stringify({
+        hooks: {
+          PostToolUse: [
+            {
+              matcher: "^Bash$",
+              hooks: [{ type: "command", command: `${launcherPath} codex-post-tool-use`, statusMessage: "compacting bash output with tokenjuice" }],
+            },
+          ],
+        },
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const report = await doctorCodexHook(hooksPath, { featureFlagConfigPath });
+
+    expect(report.status).toBe("warn");
+    expect(report.issues).toContain(
+      "configured Codex tokenjuice hook timeout is missing or stale; run tokenjuice install codex to add the 10s safety cap",
     );
   });
 

@@ -29,6 +29,19 @@ async function createTempDir(): Promise<string> {
   return dir;
 }
 
+const prettyJson = (value: unknown): string => JSON.stringify(value, null, 2);
+
+const reduceJsonOutput = (rawText: string, options?: Parameters<typeof reduceExecution>[1]) =>
+  reduceExecution(
+    {
+      toolName: "exec",
+      command: "custom-tool --json",
+      combinedText: rawText,
+      exitCode: 0,
+    },
+    options,
+  );
+
 describe("reduceExecution", () => {
   it("uses the git status rule when argv matches", async () => {
     const result = await reduceExecution({
@@ -285,6 +298,70 @@ describe("reduceExecution", () => {
 
     expect(result.classification.family).toBe("generic");
     expect(result.inlineText).toContain("lines omitted");
+  });
+
+  it("minifies whole JSON object output before generic fallback", async () => {
+    const rawText = prettyJson({
+      runtimeVersion: "2026.5.7",
+      heartbeat: {
+        defaultAgentId: "main",
+        totalSessions: 622,
+      },
+      secretDiagnostics: [],
+    });
+    const result = await reduceJsonOutput(rawText);
+
+    expect(result.classification.family).toBe("structured-json");
+    expect(result.classification.matchedReducer).toBe("generic/json");
+    expect(result.inlineText).toBe(JSON.stringify(JSON.parse(rawText) as unknown));
+    expect(result.inlineText).not.toContain("\n");
+    expect(result.inlineText).not.toContain("lines omitted");
+    expect(result.stats.reducedChars).toBeLessThan(result.stats.rawChars);
+  });
+
+  it("preserves non-zero exit status when compacting whole JSON fallback output", async () => {
+    const rawText = prettyJson({
+      ok: false,
+      error: "bad config",
+      details: Array.from({ length: 40 }, (_, index) => ({ path: `file-${index}.ts`, valid: false })),
+    });
+    const result = await reduceExecution(
+      {
+        toolName: "exec",
+        command: "custom-tool --json",
+        combinedText: rawText,
+        exitCode: 2,
+      },
+      { maxInlineChars: 220 },
+    );
+
+    expect(result.classification.matchedReducer).toBe("generic/json");
+    expect(result.inlineText).toMatch(/^exit 2\n/u);
+    expect(result.inlineText).toContain("sha256:");
+    expect(result.stats.reducedChars).toBeLessThanOrEqual(220);
+  });
+
+  it("stores raw JSON output with generic JSON classification when requested", async () => {
+    const storeDir = await createTempDir();
+    const rawText = prettyJson({
+      runtimeVersion: "2026.5.7",
+      heartbeat: {
+        totalSessions: 622,
+      },
+    });
+    const result = await reduceJsonOutput(rawText, {
+      store: true,
+      storeDir,
+    });
+
+    expect(result.rawRef?.id).toMatch(/^tj_/u);
+    expect(result.classification.matchedReducer).toBe("generic/json");
+
+    const artifact = await getArtifact(result.rawRef!.id, storeDir);
+    expect(artifact?.rawText).toBe(rawText);
+    expect(artifact?.metadata.classification.matchedReducer).toBe("generic/json");
+    expect(artifact?.metadata.rawChars).toBe(result.stats.rawChars);
+    expect(artifact?.metadata.reducedChars).toBe(result.stats.reducedChars);
   });
 
   it("does not generic-compact file inspection output", async () => {
