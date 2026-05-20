@@ -143,6 +143,98 @@ direct payload:
 - [CodeBuddy integration](docs/codebuddy-integration.md)
 - [security](SECURITY.md)
 
+## troubleshooting
+
+### `tokenjuice not found` after install
+
+If `tokenjuice --version` fails but you just installed it, your package manager's global bin directory isn't on your `PATH`.
+
+```bash
+# npm
+npm install -g tokenjuice
+# find the bin path
+npm bin -g
+
+# pnpm
+pnpm add -g tokenjuice
+# find the bin path
+pnpm bin -g
+
+# yarn
+yarn global add tokenjuice
+# find the bin path
+yarn global bin
+```
+
+Add the returned path to your `PATH` in `~/.bashrc`, `~/.zshrc`, or equivalent, then reload your shell.
+
+### host integration setup failures
+
+#### claude-code
+
+```bash
+tokenjuice install claude-code
+```
+
+If the hook isn't picked up, verify `~/.claude/settings.json` exists and contains the hook entry. Run `tokenjuice doctor hooks` to check wiring.
+
+#### codex
+
+```bash
+tokenjuice install codex
+```
+
+Codex loads hooks from `~/.codex/hooks.json`. Ensure `CODEX_HOME` is set and the hook file is present. Run `tokenjuice doctor hooks` to diagnose.
+
+#### cursor
+
+```bash
+tokenjuice install cursor
+```
+
+Cursor requires the shell to be set to a supported option (bash/zsh/fish). If the pre-tool wrap isn't firing, verify `~/.cursor/hooks.json` exists and your Cursor settings enable hooks. Run `tokenjuice doctor cursor` for targeted diagnostics.
+
+### rule loading errors
+
+tokenjuice loads rules from three layers (in order of precedence):
+
+1. built-in rules in `dist/rules/`
+2. user rules in `~/.config/tokenjuice/rules/`
+3. project rules in `.tokenjuice/rules/`
+
+If you see rule-related errors:
+
+```bash
+# check which rules are loaded
+tokenjuice doctor
+
+# validate your custom rules
+# rules must be valid JSON with a top-level "rules" array
+cat ~/.config/tokenjuice/rules/*.json | jq .
+```
+
+Malformed JSON or unknown rule fields will cause loading to fail. Check the [rules docs](docs/rules.md) for the schema.
+
+### `pnpm verify` failures
+
+`pnpm verify` runs lint, circular-dep checks, typecheck, and the full test suite. Common failures:
+
+```bash
+# typecheck errors
+pnpm typecheck
+
+# run only the tests
+pnpm test
+
+# regenerate built-in rules if you edited src/rules/
+pnpm build
+
+# check for circular dependencies
+pnpm exec madge --circular src/
+```
+
+If tests fail after a clean `pnpm install`, ensure you're on a supported Node version (check `package.json`'s `engines` field). Run `pnpm doctor` for a full environment check.
+
 ## status
 
 usable foundation for token reduction with diagnostics and a growing reducer set, now focused on deeper coverage and tuning.
